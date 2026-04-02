@@ -45,6 +45,9 @@ def list_block_children(block_id: str):
         cursor = resp.get("next_cursor")
     return results
 
+    # Separate inline content from child-page references
+    content_lines: list[str] = []
+    child_page_blocks: list[dict] = []
 
 def rich_text_to_plain(rt) -> str:
     """将 rich_text 数组转换为纯文本"""
