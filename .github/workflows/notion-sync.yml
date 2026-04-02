@@ -1,69 +1,60 @@
-name: Notion to GitHub Sync
+name: Sync Notion to Private Docs Repo
 
 on:
+  workflow_dispatch:  # 支持在 Actions 页面手动触发
   schedule:
-    - cron: "0 0 * * *"  # 每天 00:00 UTC 自动同步
-  workflow_dispatch:  # 支持手动触发
+    - cron: "0 * * * *"  # 每小时自动同步一次
 
 # 本代码仓库只需只读权限；向目标仓库写入通过 TARGET_PAT 完成
 permissions:
   contents: read
 
 jobs:
-  sync-notion:
+  sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read  # 代码仓库只需读权限；目标仓库通过 PAT 写入
 
     steps:
-      # 1. 检出本代码仓库（用于运行同步脚本）
-      - name: Checkout code repository
+      # 1. 检出当前代码仓库（获取同步脚本）
+      - name: Checkout code repo
         uses: actions/checkout@v4
         with:
-          path: code-repo
+          path: code
 
-      # 2. 检出目标私有文档仓库（用于接收导出文件）
-      - name: Checkout target repository
+      # 2. 检出目标私有文档仓库（接收导出文档）
+      - name: Checkout target docs repo
         uses: actions/checkout@v4
         with:
           repository: ${{ secrets.TARGET_REPO }}
           token: ${{ secrets.TARGET_PAT }}
-          path: target-repo
+          ref: ${{ secrets.TARGET_BRANCH }}
+          path: target
 
-      # 3. 切换到目标分支（如不存在则创建）
-      - name: Switch to target branch
-        working-directory: target-repo
-        run: |
-          git fetch origin "${{ secrets.TARGET_BRANCH }}" || true
-          git checkout "${{ secrets.TARGET_BRANCH }}" \
-            || git checkout -b "${{ secrets.TARGET_BRANCH }}"
-
-      # 4. 设置 Python 环境
+      # 3. 配置 Python 环境
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # 5. 安装依赖
+      # 4. 安装依赖
       - name: Install dependencies
         run: pip install notion-client
 
-      # 6. 运行同步脚本，把导出文件写入目标仓库工作区
-      - name: Sync Notion pages to target repo
+      # 5. 运行同步脚本，将 Notion 文档按层级结构导出到目标目录
+      - name: Export Notion docs
         env:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_ROOT_PAGE_ID: ${{ secrets.NOTION_ROOT_PAGE_ID }}
-          OUTPUT_DIR: ${{ github.workspace }}/target-repo
-        run: python3 code-repo/scripts/notion_sync.py
+          OUT_DIR: target/notion_export
+        run: python code/scripts/notion_sync.py
 
-      # 7. 提交并 push 到目标私有仓库（无变更时静默跳过）
-      - name: Commit and push to target repository
-        working-directory: target-repo
+      # 6. 将导出的文档提交并推送到目标私有仓库
+      - name: Commit and push to target repo
         run: |
+          cd target
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-          else
-            git commit -m "Sync Notion documents $(date -u '+%Y-%m-%d %H:%M UTC')"
-            git push origin "${{ secrets.TARGET_BRANCH }}"
-          fi
+          git config user.email "actions@github.com"
+          git add notion_export
+          git commit -m "sync: notion docs update $(date -u '+%Y-%m-%dT%H:%M:%SZ')" || echo "No changes to commit"
+          git push origin ${{ secrets.TARGET_BRANCH }}

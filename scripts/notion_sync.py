@@ -1,195 +1,123 @@
-"""
-notion_sync.py — Sync a Notion page tree to a local directory.
-
-Required environment variables:
-    NOTION_API_KEY       — Notion Integration secret token
-    NOTION_ROOT_PAGE_ID  — ID of the root Notion page to start from
-    OUTPUT_DIR           — Local directory to write Markdown files into
-                           (defaults to "notion_pages" in the current directory)
-"""
-
 import os
 import re
-import sys
 from pathlib import Path
-
 from notion_client import Client
 
 NOTION_API_KEY = os.environ["NOTION_API_KEY"]
 NOTION_ROOT_PAGE_ID = os.environ["NOTION_ROOT_PAGE_ID"]
-OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "notion_pages"))
+OUT_DIR = Path(os.environ.get("OUT_DIR", "notion_export"))
 
 notion = Client(auth=NOTION_API_KEY)
 
+INVALID_CHARS = r'[\\/:*?"<>|#%&{}$!@+=`~]'
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def safe_filename(name: str) -> str:
-    """Convert a page title into a filesystem-safe name."""
-    name = re.sub(r'[\\/:*?"<>|]', "_", name)
-    name = name.strip(". ")
-    return name or "Untitled"
+MAX_FILENAME_LENGTH = 120
 
 
-def get_page_title(page: dict) -> str:
-    """Extract the plain-text title from a Notion page object."""
-    try:
-        props = page.get("properties", {})
-        for key in ("title", "Name"):
-            if key in props:
-                title_blocks = props[key].get("title", [])
-                if title_blocks:
-                    return "".join(b.get("plain_text", "") for b in title_blocks)
-    except Exception:
-        pass
+def safe_name(name: str) -> str:
+    """将页面标题转换为合法的文件/目录名"""
+    name = (name or "Untitled").strip()
+    name = re.sub(INVALID_CHARS, "_", name)
+    name = re.sub(r"\s+", " ", name)
+    return name[:MAX_FILENAME_LENGTH] or "Untitled"
+
+
+def get_page_title(page_obj: dict) -> str:
+    """从页面对象中提取标题"""
+    props = page_obj.get("properties", {})
+    for _, v in props.items():
+        if v.get("type") == "title":
+            arr = v.get("title", [])
+            if arr:
+                return "".join([x.get("plain_text", "") for x in arr]).strip() or "Untitled"
     return "Untitled"
 
 
-def rich_text_to_md(rich_texts: list) -> str:
-    """Convert a Notion rich_text array to a Markdown string."""
-    parts = []
-    for rt in rich_texts:
-        text = rt.get("plain_text", "")
-        ann = rt.get("annotations", {})
-        if ann.get("code"):
-            text = f"`{text}`"
-        if ann.get("bold"):
-            text = f"**{text}**"
-        if ann.get("italic"):
-            text = f"*{text}*"
-        if ann.get("strikethrough"):
-            text = f"~~{text}~~"
-        href = rt.get("href")
-        if href:
-            text = f"[{text}]({href})"
-        parts.append(text)
-    return "".join(parts)
-
-
-def block_to_md(block: dict) -> str:
-    """Convert a single Notion block to a Markdown line (or empty string)."""
-    btype = block.get("type", "")
-    data = block.get(btype, {})
-
-    if btype == "paragraph":
-        return rich_text_to_md(data.get("rich_text", []))
-    if btype == "heading_1":
-        return "# " + rich_text_to_md(data.get("rich_text", []))
-    if btype == "heading_2":
-        return "## " + rich_text_to_md(data.get("rich_text", []))
-    if btype == "heading_3":
-        return "### " + rich_text_to_md(data.get("rich_text", []))
-    if btype == "bulleted_list_item":
-        return "- " + rich_text_to_md(data.get("rich_text", []))
-    if btype == "numbered_list_item":
-        return "1. " + rich_text_to_md(data.get("rich_text", []))
-    if btype == "to_do":
-        checked = "x" if data.get("checked") else " "
-        return f"- [{checked}] " + rich_text_to_md(data.get("rich_text", []))
-    if btype == "toggle":
-        return rich_text_to_md(data.get("rich_text", []))
-    if btype == "code":
-        lang = data.get("language", "")
-        code = rich_text_to_md(data.get("rich_text", []))
-        return f"```{lang}\n{code}\n```"
-    if btype == "quote":
-        return "> " + rich_text_to_md(data.get("rich_text", []))
-    if btype == "callout":
-        emoji = (data.get("icon") or {}).get("emoji", "")
-        text = rich_text_to_md(data.get("rich_text", []))
-        return f"> {emoji} {text}".strip()
-    if btype == "divider":
-        return "---"
-    if btype == "image":
-        url = (data.get("file") or {}).get("url") or (data.get("external") or {}).get("url", "")
-        caption = rich_text_to_md(data.get("caption", []))
-        return f"![{caption}]({url})"
-    if btype == "bookmark":
-        url = data.get("url", "")
-        caption = rich_text_to_md(data.get("caption", []))
-        return f"[{caption or url}]({url})"
-    # child_page / child_database are handled by recursion, not inline content
-    return ""
-
-
-# ---------------------------------------------------------------------------
-# Core sync logic
-# ---------------------------------------------------------------------------
-
-def fetch_all_children(block_id: str) -> list:
-    """Fetch all child blocks for a given block/page ID (handles pagination)."""
-    blocks = []
+def list_block_children(block_id: str):
+    """分页获取 block 的所有子块"""
+    results = []
     cursor = None
     while True:
-        kwargs = {"block_id": block_id, "page_size": 100}
-        if cursor:
-            kwargs["start_cursor"] = cursor
-        response = notion.blocks.children.list(**kwargs)
-        blocks.extend(response.get("results", []))
-        if not response.get("has_more"):
+        resp = notion.blocks.children.list(block_id=block_id, start_cursor=cursor, page_size=100)
+        results.extend(resp.get("results", []))
+        if not resp.get("has_more"):
             break
-        cursor = response.get("next_cursor")
-    return blocks
-
-
-def sync_page(page_id: str, output_path: Path, depth: int = 0) -> None:
-    """
-    Recursively sync a Notion page and its descendants into `output_path`.
-
-    * Pages that have child pages become a sub-directory; their own content is
-      written to ``index.md`` inside that directory.
-    * Leaf pages (no child pages) are written as a single ``<title>.md`` file.
-    """
-    try:
-        page = notion.pages.retrieve(page_id=page_id)
-    except Exception as exc:
-        print(f"{'  ' * depth}ERROR retrieving {page_id}: {exc}", file=sys.stderr)
-        return
-
-    title = get_page_title(page)
-    safe_title = safe_filename(title)
-    indent = "  " * depth
-    print(f"{indent}Syncing: {title}")
-
-    # Fetch all direct children once
-    all_blocks = fetch_all_children(page_id)
+        cursor = resp.get("next_cursor")
+    return results
 
     # Separate inline content from child-page references
     content_lines: list[str] = []
     child_page_blocks: list[dict] = []
 
-    for block in all_blocks:
-        btype = block.get("type", "")
-        if btype in ("child_page", "child_database"):
-            child_page_blocks.append(block)
+def rich_text_to_plain(rt) -> str:
+    """将 rich_text 数组转换为纯文本"""
+    return "".join([x.get("plain_text", "") for x in rt or []])
+
+
+def block_to_md(block: dict) -> str:
+    """将单个 Notion block 转换为 Markdown 文本"""
+    t = block["type"]
+    b = block.get(t, {})
+    if t == "paragraph":
+        return rich_text_to_plain(b.get("rich_text")) + "\n"
+    if t == "heading_1":
+        return "# " + rich_text_to_plain(b.get("rich_text")) + "\n"
+    if t == "heading_2":
+        return "## " + rich_text_to_plain(b.get("rich_text")) + "\n"
+    if t == "heading_3":
+        return "### " + rich_text_to_plain(b.get("rich_text")) + "\n"
+    if t == "bulleted_list_item":
+        return "- " + rich_text_to_plain(b.get("rich_text")) + "\n"
+    if t == "numbered_list_item":
+        return "1. " + rich_text_to_plain(b.get("rich_text")) + "\n"
+    if t == "to_do":
+        checked = b.get("checked", False)
+        mark = "x" if checked else " "
+        return f"- [{mark}] " + rich_text_to_plain(b.get("rich_text")) + "\n"
+    if t == "quote":
+        return "> " + rich_text_to_plain(b.get("rich_text")) + "\n"
+    if t == "code":
+        lang = b.get("language", "")
+        return f"```{lang}\n{rich_text_to_plain(b.get('rich_text'))}\n```\n"
+    if t == "divider":
+        return "---\n"
+    return f"<!-- unsupported block: {t} -->\n"
+
+
+def export_page_recursive(page_id: str, parent_dir: Path):
+    """
+    递归导出 Notion 页面及其所有子页面，保持层级目录结构。
+    每个页面在目标目录下创建以页面标题命名的子目录，
+    页面内容写入该目录的 index.md 文件。
+    """
+    page = notion.pages.retrieve(page_id=page_id)
+    title = safe_name(get_page_title(page))
+    page_dir = parent_dir / title
+    page_dir.mkdir(parents=True, exist_ok=True)
+
+    md_lines = [f"# {title}\n\n"]
+    children = list_block_children(page_id)
+
+    child_pages = []
+    for blk in children:
+        if blk.get("type") == "child_page":
+            child_pages.append(blk)
         else:
-            line = block_to_md(block)
-            content_lines.append(line)
+            md_lines.append(block_to_md(blk))
 
-    content = "\n".join(content_lines).strip()
-    md_body = f"# {title}\n\n{content}\n" if content else f"# {title}\n"
+    (page_dir / "index.md").write_text("".join(md_lines), encoding="utf-8")
+    print(f"  导出：{page_dir / 'index.md'}")
 
-    if child_page_blocks:
-        # This page has children → write to a sub-directory
-        page_dir = output_path / safe_title
-        page_dir.mkdir(parents=True, exist_ok=True)
-        (page_dir / "index.md").write_text(md_body, encoding="utf-8")
-        for child_block in child_page_blocks:
-            sync_page(child_block["id"], page_dir, depth + 1)
-    else:
-        # Leaf page → single Markdown file
-        output_path.mkdir(parents=True, exist_ok=True)
-        (output_path / f"{safe_title}.md").write_text(md_body, encoding="utf-8")
+    # 递归处理子页面
+    for cp in child_pages:
+        export_page_recursive(cp["id"], page_dir)
 
 
-def main() -> None:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"Output directory : {OUTPUT_DIR.resolve()}")
-    print(f"Root page ID     : {NOTION_ROOT_PAGE_ID}")
-    sync_page(NOTION_ROOT_PAGE_ID, OUTPUT_DIR)
-    print("Sync complete!")
+def main():
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"开始从根页面 {NOTION_ROOT_PAGE_ID} 递归导出...")
+    export_page_recursive(NOTION_ROOT_PAGE_ID, OUT_DIR)
+    print(f"导出完成，文件保存到：{OUT_DIR}")
 
 
 if __name__ == "__main__":
