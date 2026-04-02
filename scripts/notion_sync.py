@@ -108,9 +108,11 @@ def export_page_recursive(page_id: str, parent_dir: Path):
     (page_dir / "index.md").write_text("".join(md_lines), encoding="utf-8")
     print(f"  导出：{page_dir / 'index.md'}")
 
-    # 递归处理子页面
-    for cp in child_pages:
-        export_page_recursive(cp["id"], page_dir)
+def sync_pages():
+    """同步所有页面内容到本地"""
+    os.makedirs("notion_pages", exist_ok=True)
+    pages = fetch_all_pages()
+    print(f"发现 {len(pages)} 个页面，开始同步...")
 
 
 def main():
