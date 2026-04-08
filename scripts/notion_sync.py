@@ -110,6 +110,33 @@ def rich_text_to_plain(rt) -> str:
     return "".join([x.get("plain_text", "") for x in rt or []])
 
 
+def block_text_summary(block: dict) -> str:
+    """提取 block 的纯文本摘要，用于组合型结构（如 column_list）"""
+    t = block["type"]
+    b = block.get(t, {})
+    if t in {
+        "paragraph",
+        "heading_1",
+        "heading_2",
+        "heading_3",
+        "bulleted_list_item",
+        "numbered_list_item",
+        "quote",
+        "code",
+    }:
+        return rich_text_to_plain(b.get("rich_text"))
+    if t == "to_do":
+        checked = b.get("checked", False)
+        mark = "x" if checked else " "
+        return f"[{mark}] " + rich_text_to_plain(b.get("rich_text"))
+    return ""
+
+
+def escape_md_table_cell(text: str) -> str:
+    """转义 Markdown 表格单元格中的特殊字符"""
+    return text.replace("|", "\\|").replace("\n", "<br>").strip()
+
+
 def block_to_md(block: dict) -> str:
     """将单个 Notion block 转换为 Markdown 文本"""
     t = block["type"]
@@ -135,6 +162,28 @@ def block_to_md(block: dict) -> str:
     if t == "code":
         lang = b.get("language", "")
         return f"```{lang}\n{rich_text_to_plain(b.get('rich_text'))}\n```\n"
+    if t == "column_list":
+        columns = list_block_children(block["id"])
+        cells = []
+        for col in columns:
+            if col.get("type") != "column":
+                continue
+            col_children = list_block_children(col["id"])
+            parts = []
+            for child in col_children:
+                text = block_text_summary(child).strip()
+                if text:
+                    parts.append(escape_md_table_cell(text))
+            if parts:
+                cells.append("<br>".join(parts))
+        if not cells:
+            return ""
+        headers = [f"列{i+1}" for i in range(len(cells))]
+        return (
+            "| " + " | ".join(headers) + " |\n"
+            "| " + " | ".join(["----"] * len(headers)) + " |\n"
+            "| " + " | ".join(cells) + " |\n"
+        )
     if t == "divider":
         return "---\n"
     return f"<!-- unsupported block: {t} -->\n"
