@@ -7,6 +7,8 @@
 本仓库通过 GitHub Actions，定时（或手动）将 Notion Integration 所能访问的页面内容以 Markdown 格式同步到目标仓库的 `notion_export/` 目录中，并自动 commit & push。
 
 支持同步**多个顶级页面**：在 Secret 中以逗号分隔多个页面 ID，脚本会自动递归导出每个页面及其全部子页面。
+- 支持 Notion 图片 block 导出为 Markdown 图片语法。
+- `column_list` 导出不会再生成“列1、列2”这类默认表头。
 
 ---
 

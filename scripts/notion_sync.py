@@ -15,6 +15,7 @@ notion = Client(auth=NOTION_API_KEY)
 INVALID_CHARS = r'[\\/:*?"<>|#%&{}$!@+=`~]'
 
 MAX_FILENAME_LENGTH = 120
+DEFAULT_IMAGE_ALT = "图片"
 
 # 两个正则分别匹配无横线（32位）和带横线（UUID）两种格式
 _HEX32_RE = re.compile(r"^[0-9a-fA-F]{32}$")
@@ -129,12 +130,34 @@ def block_text_summary(block: dict) -> str:
         checked = b.get("checked", False)
         mark = "x" if checked else " "
         return f"[{mark}] " + rich_text_to_plain(b.get("rich_text"))
+    if t == "image":
+        return render_image_md(b)
     return ""
 
 
 def escape_md_table_cell(text: str) -> str:
     """转义 Markdown 表格单元格中的特殊字符"""
     return text.replace("|", "\\|").replace("\n", "<br>").strip()
+
+
+def get_notion_file_url(file_property: dict) -> str:
+    """提取 Notion 文件属性（external/file）的可访问 URL"""
+    if not isinstance(file_property, dict):
+        return ""
+    if file_property.get("type") == "external":
+        return file_property.get("external", {}).get("url", "")
+    if file_property.get("type") == "file":
+        return file_property.get("file", {}).get("url", "")
+    return ""
+
+
+def render_image_md(image_property: dict) -> str:
+    """将 Notion image 属性渲染为 Markdown 图片语法"""
+    url = get_notion_file_url(image_property)
+    if not url:
+        return ""
+    caption = rich_text_to_plain(image_property.get("caption")).strip() or DEFAULT_IMAGE_ALT
+    return f"![{caption}]({url})"
 
 
 def block_to_md(block: dict) -> str:
@@ -162,6 +185,9 @@ def block_to_md(block: dict) -> str:
     if t == "code":
         lang = b.get("language", "")
         return f"```{lang}\n{rich_text_to_plain(b.get('rich_text'))}\n```\n"
+    if t == "image":
+        image_md = render_image_md(b)
+        return f"{image_md}\n" if image_md else ""
     if t == "column_list":
         columns = list_block_children(block["id"])
         cells = []
@@ -178,7 +204,7 @@ def block_to_md(block: dict) -> str:
                 cells.append("<br>".join(parts))
         if not cells:
             return ""
-        headers = [f"列{i+1}" for i in range(len(cells))]
+        headers = [""] * len(cells)
         return (
             "| " + " | ".join(headers) + " |\n"
             "| " + " | ".join(["----"] * len(headers)) + " |\n"
