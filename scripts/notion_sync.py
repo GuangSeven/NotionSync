@@ -15,6 +15,7 @@ notion = Client(auth=NOTION_API_KEY)
 INVALID_CHARS = r'[\\/:*?"<>|#%&{}$!@+=`~]'
 
 MAX_FILENAME_LENGTH = 120
+DEFAULT_IMAGE_ALT = "图片"
 
 # 两个正则分别匹配无横线（32位）和带横线（UUID）两种格式
 _HEX32_RE = re.compile(r"^[0-9a-fA-F]{32}$")
@@ -155,7 +156,7 @@ def render_image_md(image_property: dict) -> str:
     url = get_notion_file_url(image_property)
     if not url:
         return ""
-    caption = rich_text_to_plain(image_property.get("caption")).strip() or "图片"
+    caption = rich_text_to_plain(image_property.get("caption")).strip() or DEFAULT_IMAGE_ALT
     return f"![{caption}]({url})"
 
 
