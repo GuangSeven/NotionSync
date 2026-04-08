@@ -111,6 +111,9 @@ def call_notion_with_retry(request_fn, action: str):
     def backoff_delay(attempt: int) -> float:
         return min(NOTION_API_RETRY_BASE_DELAY * (2 ** (attempt - 1)), NOTION_API_RETRY_MAX_DELAY)
 
+    def is_rate_limited_error(err: APIResponseError) -> bool:
+        return getattr(err, "status", None) == 429 or str(getattr(err, "code", "")) == "rate_limited"
+
     for attempt in range(1, NOTION_API_MAX_RETRIES + 1):
         try:
             return request_fn()
@@ -124,9 +127,7 @@ def call_notion_with_retry(request_fn, action: str):
             )
             time.sleep(delay)
         except APIResponseError as e:
-            status = getattr(e, "status", None)
-            code = str(getattr(e, "code", ""))
-            if status != 429 and code != "rate_limited":
+            if not is_rate_limited_error(e):
                 raise
             if attempt >= NOTION_API_MAX_RETRIES:
                 raise
@@ -174,9 +175,9 @@ def list_block_children(block_id: str):
             )
             break
         except APIResponseError as e:
-            status = getattr(e, "status", None) or getattr(e, "code", None)
+            status_or_code = getattr(e, "status", None) or getattr(e, "code", None)
             print(
-                f"  ⚠️ 跳过 block {block_id} 的剩余子块（无法访问，{status}）：{e}",
+                f"  ⚠️ 跳过 block {block_id} 的剩余子块（无法访问，{status_or_code}）：{e}",
                 file=sys.stderr,
             )
             break
