@@ -17,9 +17,29 @@ INVALID_CHARS = r'[\\/:*?"<>|#%&{}$!@+=`~]'
 
 MAX_FILENAME_LENGTH = 120
 DEFAULT_IMAGE_ALT = "图片"
-NOTION_API_MAX_RETRIES = int(os.environ.get("NOTION_API_MAX_RETRIES", "5"))
-NOTION_API_RETRY_BASE_DELAY = float(os.environ.get("NOTION_API_RETRY_BASE_DELAY", "1"))
-NOTION_API_RETRY_MAX_DELAY = float(os.environ.get("NOTION_API_RETRY_MAX_DELAY", "10"))
+
+
+def parse_env_int(name: str, default: str) -> int:
+    raw = os.environ.get(name, default)
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"❌ 环境变量 {name} 必须是整数，当前值：{raw!r}", file=sys.stderr)
+        sys.exit(1)
+
+
+def parse_env_float(name: str, default: str) -> float:
+    raw = os.environ.get(name, default)
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"❌ 环境变量 {name} 必须是数字，当前值：{raw!r}", file=sys.stderr)
+        sys.exit(1)
+
+
+NOTION_API_MAX_RETRIES = parse_env_int("NOTION_API_MAX_RETRIES", "5")
+NOTION_API_RETRY_BASE_DELAY = parse_env_float("NOTION_API_RETRY_BASE_DELAY", "1")
+NOTION_API_RETRY_MAX_DELAY = parse_env_float("NOTION_API_RETRY_MAX_DELAY", "10")
 
 # 两个正则分别匹配无横线（32位）和带横线（UUID）两种格式
 _HEX32_RE = re.compile(r"^[0-9a-fA-F]{32}$")
@@ -87,13 +107,17 @@ def validate_notion_token():
 
 def call_notion_with_retry(request_fn, action: str):
     """对 Notion API 请求进行有限次重试（超时与限流）。"""
+
+    def backoff_delay(attempt: int) -> float:
+        return min(NOTION_API_RETRY_BASE_DELAY * (2 ** (attempt - 1)), NOTION_API_RETRY_MAX_DELAY)
+
     for attempt in range(1, NOTION_API_MAX_RETRIES + 1):
         try:
             return request_fn()
         except RequestTimeoutError:
             if attempt >= NOTION_API_MAX_RETRIES:
                 raise
-            delay = min(NOTION_API_RETRY_BASE_DELAY * (2 ** (attempt - 1)), NOTION_API_RETRY_MAX_DELAY)
+            delay = backoff_delay(attempt)
             print(
                 f"  ⚠️ Notion 请求超时：{action}（第 {attempt}/{NOTION_API_MAX_RETRIES} 次），{delay:.1f}s 后重试...",
                 file=sys.stderr,
@@ -101,12 +125,12 @@ def call_notion_with_retry(request_fn, action: str):
             time.sleep(delay)
         except APIResponseError as e:
             status = getattr(e, "status", None)
-            code = str(getattr(e, "code", "") or "")
+            code = str(getattr(e, "code", ""))
             if status != 429 and code != "rate_limited":
                 raise
             if attempt >= NOTION_API_MAX_RETRIES:
                 raise
-            delay = min(NOTION_API_RETRY_BASE_DELAY * (2 ** (attempt - 1)), NOTION_API_RETRY_MAX_DELAY)
+            delay = backoff_delay(attempt)
             print(
                 f"  ⚠️ Notion API 限流：{action}（第 {attempt}/{NOTION_API_MAX_RETRIES} 次），{delay:.1f}s 后重试...",
                 file=sys.stderr,
