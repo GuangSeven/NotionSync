@@ -296,6 +296,13 @@ def block_to_md(block: dict) -> str:
     return f"<!-- unsupported block: {t} -->\n"
 
 
+def child_page_link_md(block: dict) -> str:
+    """将 child_page block 转换为 Markdown 链接（假设子页面导出到 ./<标题>/index.md）"""
+    child = block.get("child_page", {})
+    child_title = safe_name(child.get("title") or "Untitled")
+    return f"[{child_title}](./{child_title}/index.md)\n"
+
+
 def export_page_recursive(page_id: str, parent_dir: Path):
     """
     递归导出 Notion 页面及其所有子页面，保持层级目录结构。
@@ -328,6 +335,7 @@ def export_page_recursive(page_id: str, parent_dir: Path):
     for blk in children:
         if blk.get("type") == "child_page":
             child_pages.append(blk)
+            md_lines.append(child_page_link_md(blk))
         else:
             md_lines.append(block_to_md(blk))
 
